@@ -31,6 +31,31 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <title>KANADE</title>
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, doc, getDoc, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyCw8geGKM4-dVEEfq_3DulaoKe2NEHBfLg",
+    authDomain: "kanade-2026.firebaseapp.com",
+    projectId: "kanade-2026",
+    storageBucket: "kanade-2026.firebasestorage.app",
+    messagingSenderId: "255521977367",
+    appId: "1:255521977367:web:5f53a3abffe8fe3a251852",
+    measurementId: "G-YLVP3233CT"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  // Expose ke global agar fungsi lain bisa akses
+  window._fbAuth = auth;
+  window._fbDb = db;
+  window._fbFns = { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, doc, getDoc, setDoc, updateDoc };
+</script>
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=Noto+Sans+JP:wght@300;400;500;700&family=Noto+Serif+JP:wght@400;700&family=DM+Mono:wght@400;500&display=swap" onload="this.onload=null;this.rel='stylesheet'">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=Noto+Sans+JP:wght@300;400;500;700&family=Noto+Serif+JP:wght@400;700&family=DM+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'">
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=Noto+Sans+JP:wght@300;400;500;700&family=Noto+Serif+JP:wght@400;700&family=DM+Mono:wght@400;500&display=swap"></noscript>
@@ -2366,6 +2391,23 @@ let currentUser = null;
 function loadUsers() { return JSON.parse(localStorage.getItem('km_users') || '{}'); }
 function saveUsers(u) { localStorage.setItem('km_users', JSON.stringify(u)); }
 
+// ===== FIREBASE CLOUD FUNCTIONS =====
+async function saveProgressToCloud(nim, data) {
+  try {
+    if (!window._fbDb || !window._fbFns) return;
+    var {doc, setDoc} = window._fbFns;
+    await setDoc(doc(window._fbDb, 'users', nim), data, {merge: true});
+  } catch(e) { console.warn('Cloud save gagal:', e); }
+}
+async function loadProgressFromCloud(nim) {
+  try {
+    if (!window._fbDb || !window._fbFns) return null;
+    var {doc, getDoc} = window._fbFns;
+    var snap = await getDoc(doc(window._fbDb, 'users', nim));
+    return snap.exists() ? snap.data() : null;
+  } catch(e) { console.warn('Cloud load gagal:', e); return null; }
+}
+
 function showLoginError(msg) {
   var el = document.getElementById('ov-err');
   el.textContent = msg;
@@ -2386,21 +2428,27 @@ function doAuth() {
   // TODO: aktifkan validasi sandi resmi di sini nanti
   var registered = MAHASISWA[nim] || nama;
 
-  // NIM+Sandi valid — load or create progress
+  // NIM+Sandi valid — coba load dari cloud dulu, fallback ke lokal
   var users = loadUsers();
-  var key = nim; // simpan dengan NIM sebagai key
-  if (!users[key]) {
-    users[key] = { nim: nim, nama: registered, xp: 0, level: 1, streak: 0, correct: 0, score: 0, mastered: [], srs: {}, logs: [], created: new Date().toISOString() };
-    saveUsers(users);
-    showToast('🎉 Selamat datang, ' + registered + '!', 'correct');
-    confetti();
-  } else {
-    showToast('👋 Selamat datang kembali, ' + (users[key].nama || registered) + '!', 'correct');
-  }
-  applyLogin(nim, users[key]);
-  // Log login — dilakukan setelah applyLogin agar currentUser sudah terisi
-  var _isNew = !users[key].logs || users[key].logs.length === 0;
-  addLog('login', _isNew ? '🎌 Pertama kali masuk — Selamat belajar!' : '🔑 Login sebagai ' + (users[key].nama || nim));
+  var key = nim;
+  loadProgressFromCloud(key).then(function(cloudData) {
+    if (cloudData) {
+      // Gabungkan: cloud lebih prioritas
+      users[key] = cloudData;
+      saveUsers(users);
+      showToast('☁️ Progres dimuat dari cloud!', 'correct');
+    } else if (!users[key]) {
+      users[key] = { nim: nim, nama: registered, xp: 0, level: 1, streak: 0, correct: 0, score: 0, mastered: [], srs: {}, logs: [], created: new Date().toISOString() };
+      saveUsers(users);
+      showToast('🎉 Selamat datang, ' + registered + '!', 'correct');
+      confetti();
+    } else {
+      showToast('👋 Selamat datang kembali, ' + (users[key].nama || registered) + '!', 'correct');
+    }
+    applyLogin(nim, users[key]);
+    var _isNew = !users[key].logs || users[key].logs.length === 0;
+    addLog('login', _isNew ? '🎌 Pertama kali masuk — Selamat belajar!' : '🔑 Login sebagai ' + (users[key].nama || nim));
+  });
 }
 
 function applyLogin(nim, data) {
@@ -2471,6 +2519,8 @@ function saveProgress() {
   users[currentUser].mastered = Array.from(masteredSet);
   users[currentUser].srs = srsData;
   saveUsers(users);
+  // Simpan juga ke cloud
+  saveProgressToCloud(currentUser, users[currentUser]);
 }
 
 function addLog(type, msg) {
@@ -2481,6 +2531,7 @@ function addLog(type, msg) {
   users[currentUser].logs.unshift({ type: type, msg: msg, time: new Date().toLocaleString('id-ID') });
   if (users[currentUser].logs.length > 30) users[currentUser].logs.pop();
   saveUsers(users);
+  saveProgressToCloud(currentUser, users[currentUser]);
 }
 
 setInterval(saveProgress, 30000);
